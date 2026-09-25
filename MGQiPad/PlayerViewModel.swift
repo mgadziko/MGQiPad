@@ -5,6 +5,10 @@ import SwiftUI
 
 @MainActor
 final class PlayerViewModel: ObservableObject {
+    /// Offline rendering holds the decoded source and rendered stereo result in
+    /// memory at once.  Keep its estimated peak below a level iPadOS can safely
+    /// sustain; larger Music-library items fall back to Apple's player.
+    private static let maximumOfflineRenderBytes = 800_000_000.0
     @Published var leftBands = EqualizerBand.frequencies.enumerated().map { EqualizerBand(id: $0.offset, frequency: $0.element, gain: 0) }
     @Published var rightBands = EqualizerBand.frequencies.enumerated().map { EqualizerBand(id: $0.offset, frequency: $0.element, gain: 0) }
     @Published var tandem = true { didSet { persistCurrentEQ() } }
@@ -23,6 +27,10 @@ final class PlayerViewModel: ObservableObject {
     @Published var pendingLibrarySelection: LibraryPlaybackSelection?
     @Published var playbackElapsed: TimeInterval = 0
     @Published var playbackDuration: TimeInterval = 0
+    @Published var isPreparingTrack = false
+    @Published var showPreparationProgress = false
+    @Published var preparationProgress = 0.0
+    @Published var preparationPhase = "Loading track"
 
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
@@ -41,6 +49,7 @@ final class PlayerViewModel: ObservableObject {
     /// Increments whenever scheduled MGQ playback is replaced or stopped.
     /// A completion from an old buffer must never advance the library queue.
     private var scheduledPlaybackID = 0
+    private var preparationID = 0
 
     init() {
         engine.attach(player)
@@ -65,12 +74,10 @@ final class PlayerViewModel: ObservableObject {
     }
 
     func importFile(_ url: URL) {
-        let access = url.startAccessingSecurityScopedResource()
-        defer { if access { url.stopAccessingSecurityScopedResource() } }
         usingMusicLibrary = false
         libraryUsesMGQ = false
         restoredMGQPlaybackPending = false
-        _ = loadAudioFile(url, title: url.deletingPathExtension().lastPathComponent, album: nil, artist: nil, autoplay: false)
+        loadAudioFile(url, title: url.deletingPathExtension().lastPathComponent, album: nil, artist: nil, autoplay: false)
     }
 
     func togglePlayback() {
@@ -281,32 +288,81 @@ final class PlayerViewModel: ObservableObject {
         let item = mgqLibraryQueue[mgqLibraryQueueIndex]
         guard let url = item.assetURL else { return }
         cancelMGQPlayback()
-        if !loadAudioFile(url, title: item.title ?? "Music library track", album: item.albumTitle, artist: item.artist, autoplay: autoplay) {
-            startAppleMusicPlayback(LibraryPlaybackSelection(title: item.title ?? "Music library track", tracks: mgqLibraryQueue, startItem: item), autoplay: autoplay)
+        loadAudioFile(url, title: item.title ?? "Music library track", album: item.albumTitle, artist: item.artist, autoplay: autoplay) { [weak self] success in
+            guard let self, !success else { return }
+            self.startAppleMusicPlayback(LibraryPlaybackSelection(title: item.title ?? "Music library track", tracks: self.mgqLibraryQueue, startItem: item), autoplay: autoplay)
         }
     }
 
-    @discardableResult
-    private func loadAudioFile(_ url: URL, title: String, album: String?, artist: String?, autoplay: Bool) -> Bool {
-        do {
+    private func loadAudioFile(_ url: URL, title: String, album: String?, artist: String?, autoplay: Bool, completion: @escaping (Bool) -> Void = { _ in }) {
+        preparationID &+= 1
+        let loadID = preparationID
+        isPreparingTrack = true
+        showPreparationProgress = false
+        preparationProgress = 0
+        preparationPhase = "Loading \(title)"
+        let left = bypassed ? Array(repeating: Float.zero, count: EqualizerBand.frequencies.count) : leftBands.map(\.gain)
+        let right = bypassed ? Array(repeating: Float.zero, count: EqualizerBand.frequencies.count) : rightBands.map(\.gain)
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard let self, self.preparationID == loadID, self.isPreparingTrack else { return }
+            self.showPreparationProgress = true
+        }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let access = url.startAccessingSecurityScopedResource()
+            defer { if access { url.stopAccessingSecurityScopedResource() } }
+            do {
             let file = try AVAudioFile(forReading: url)
             guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: file.processingFormat.sampleRate, channels: max(1, min(2, file.processingFormat.channelCount)), interleaved: false),
-                  file.length > 0,
-                  let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(file.length)) else { throw CocoaError(.fileReadCorruptFile) }
-            try file.read(into: buffer)
+                  file.length > 0 else { throw CocoaError(.fileReadCorruptFile) }
+            // The source buffer plus the always-stereo rendered buffer, with a
+            // small working allowance.  A 112-minute stereo track exceeds this
+            // by several gigabytes and can otherwise be terminated by iPadOS.
+            let estimatedPeakBytes = Double(file.length) * Double(Int(format.channelCount) + 2) * Double(MemoryLayout<Float>.size) * 1.25
+            guard estimatedPeakBytes <= Self.maximumOfflineRenderBytes,
+                  let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(file.length)) else { throw OfflineRenderError.trackTooLarge }
+            buffer.frameLength = AVAudioFrameCount(file.length)
+            var framesRead = 0
+            while framesRead < Int(file.length) {
+                let count = min(65_536, Int(file.length) - framesRead)
+                guard let chunk = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(count)) else { throw CocoaError(.fileReadCorruptFile) }
+                try file.read(into: chunk, frameCount: AVAudioFrameCount(count))
+                guard chunk.frameLength > 0, let from = chunk.floatChannelData, let to = buffer.floatChannelData else { throw CocoaError(.fileReadCorruptFile) }
+                for channel in 0..<Int(format.channelCount) { to[channel].advanced(by: framesRead).update(from: from[channel], count: Int(chunk.frameLength)) }
+                framesRead += Int(chunk.frameLength)
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.preparationID == loadID else { return }
+                    self.preparationProgress = Double(framesRead) / Double(file.length) * 0.7
+                }
+            }
             guard buffer.frameLength > 0 else { throw CocoaError(.fileReadCorruptFile) }
-            sourceBuffer = buffer
-            playbackDuration = Double(buffer.frameLength) / buffer.format.sampleRate
-            playbackElapsed = 0
-            self.title = title
-            albumTitle = album ?? ""
-            artistName = artist ?? ""
-            status = autoplay ? "Processing Music library track through MGQ EQ and spectrum analyzer" : "Loaded — ready to process through MGQ"
-            rebuildPlayback(autoplay: autoplay, startingAt: 0)
-            return true
-        } catch {
-            status = "Could not open this audio file through MGQ: \(error.localizedDescription)"
-            return false
+            DispatchQueue.main.async { [weak self] in guard let self, self.preparationID == loadID else { return }; self.preparationPhase = "Applying MGQ EQ"; self.preparationProgress = 0.72 }
+            let rendered = StereoEQRenderer().render(buffer, left: left, right: right, frequencies: EqualizerBand.frequencies)
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.preparationID == loadID else { return }
+                self.sourceBuffer = buffer; self.preparedBuffer = rendered
+                self.playbackDuration = Double(buffer.frameLength) / buffer.format.sampleRate; self.playbackElapsed = 0
+                self.title = title; self.albumTitle = album ?? ""; self.artistName = artist ?? ""
+                self.status = autoplay ? "Processing Music library track through MGQ EQ and spectrum analyzer" : "Loaded — ready to process through MGQ"
+                self.schedulePreparedPlayback(autoplay: autoplay, sourceFrame: 0)
+                self.preparationProgress = 1; self.isPreparingTrack = false; self.showPreparationProgress = false
+                completion(true)
+            }
+            } catch {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.preparationID == loadID else { return }
+                    self.isPreparingTrack = false; self.showPreparationProgress = false
+                    self.status = "Could not open this audio file through MGQ: \(error.localizedDescription)"; completion(false)
+                }
+            }
+        }
+    }
+
+    private enum OfflineRenderError: LocalizedError {
+        case trackTooLarge
+
+        var errorDescription: String? {
+            "This track is too large for MGQ's offline EQ renderer. It will play through Apple's player without MGQ EQ or the spectrum analyzer."
         }
     }
 
@@ -348,9 +404,6 @@ final class PlayerViewModel: ObservableObject {
 
     private func rebuildPlayback(autoplay: Bool, startingAt sourceFrame: AVAudioFramePosition = 0) {
         guard let sourceBuffer else { return }
-        cancelMGQPlayback()
-        let playbackID = scheduledPlaybackID
-        scheduledSourceFrame = sourceFrame
         let left = leftBands.map(\.gain), right = rightBands.map(\.gain)
         // The player node feeds a stereo mixer.  It must always receive a
         // stereo buffer, including while EQ is bypassed.  Scheduling a mono
@@ -363,6 +416,13 @@ final class PlayerViewModel: ObservableObject {
             right: bypassed ? Array(repeating: 0, count: EqualizerBand.frequencies.count) : right,
             frequencies: EqualizerBand.frequencies
         )
+        schedulePreparedPlayback(autoplay: autoplay, sourceFrame: sourceFrame)
+    }
+
+    private func schedulePreparedPlayback(autoplay: Bool, sourceFrame: AVAudioFramePosition) {
+        cancelMGQPlayback()
+        let playbackID = scheduledPlaybackID
+        scheduledSourceFrame = sourceFrame
         if let preparedBuffer {
             updateSpectrum(preparedBuffer)
             player.scheduleBuffer(preparedBuffer, at: nil, options: [], completionCallbackType: .dataPlayedBack) { [weak self] _ in

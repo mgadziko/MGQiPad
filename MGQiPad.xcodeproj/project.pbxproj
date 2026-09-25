@@ -77,6 +77,7 @@
 				A700001 /* Sources */,
 				A300001 /* Frameworks */,
 				A700002 /* Resources */,
+				A700003 /* Stamp Build Time */,
 			);
 			buildRules = (
 			);
@@ -128,6 +129,23 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		A700003 /* Stamp Build Time */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+			);
+			name = "Stamp Build Time";
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "BUILD_STAMP=\"$(date '+%y%m%d-%H%M')\"\nSTAMP_FILE=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/BuildStamp.txt\"\nprintf '%s\\n' \"$BUILD_STAMP\" > \"$STAMP_FILE\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		A700001 /* Sources */ = {

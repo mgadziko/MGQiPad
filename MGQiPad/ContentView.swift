@@ -8,6 +8,7 @@ struct ContentView: View {
     @State private var showingSavePreset = false
     @State private var showingLoadPreset = false
     @State private var showingLibrary = false
+    @State private var libraryPath: [MusicLibraryRoute] = []
     @State private var controlsReady = false
 
     var body: some View {
@@ -23,7 +24,7 @@ struct ContentView: View {
                         .font(.title.bold())
                     Text("Preparing dual 31-band EQ…")
                         .foregroundStyle(.secondary)
-                    Text("Build 260925-0811")
+                    Text("Build \(buildStamp)")
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
                     Text("Contact: mgqipad@quantumpenguin")
@@ -38,6 +39,9 @@ struct ContentView: View {
             guard !controlsReady else { return }
             try? await Task.sleep(for: .seconds(2))
             controlsReady = true
+        }
+        .overlay {
+            preparationOverlay
         }
     }
 
@@ -61,7 +65,7 @@ struct ContentView: View {
                     Button { player.toggleTransport() } label: { Image(systemName: transportIsPlaying ? "pause.fill" : "play.fill") }
                     Button { player.nextTrack() } label: { Label("Next", systemImage: "forward.fill") }
                         .disabled(!player.usingMusicLibrary)
-                    Button { showingLibrary = true } label: { Label("Music Library", systemImage: "music.note.list") }
+                    Button { player.requestMusicLibrary(); showingLibrary = true } label: { Label("Music Library", systemImage: "music.note.list") }
                 }
             }
         }
@@ -82,7 +86,21 @@ struct ContentView: View {
             Text(player.presets.isEmpty ? "There are no saved presets yet." : "Choose a preset to apply it immediately.")
         }
         .sheet(isPresented: $showingLibrary) {
-            NavigationStack { MusicLibraryView() }
+            NavigationStack(path: $libraryPath) {
+                MusicLibraryView()
+                    .navigationDestination(for: MusicLibraryRoute.self) { route in
+                        switch route {
+                        case let .artist(artist):
+                            ArtistAlbumsView(artist: artist)
+                        case let .album(artist, title):
+                            if let album = player.albums(for: artist).first(where: { $0.title == title }) {
+                                AlbumTracksView(album: album)
+                            } else {
+                                ContentUnavailableView("Album unavailable", systemImage: "music.note")
+                            }
+                        }
+                    }
+            }
                 .environmentObject(player)
         }
         .alert("Playback is already in progress", isPresented: Binding(get: { player.pendingLibrarySelection != nil }, set: { if !$0 { player.cancelPendingSelection() } })) {
@@ -91,6 +109,39 @@ struct ContentView: View {
             Button("Cancel", role: .cancel) { player.cancelPendingSelection() }
         } message: {
             Text("What would you like to do with \(player.pendingLibrarySelection?.title ?? "this selection")?")
+        }
+    }
+
+    @ViewBuilder
+    private var preparationOverlay: some View {
+        if player.showPreparationProgress {
+            VStack(spacing: 12) {
+                Text("Preparing track")
+                    .font(.headline)
+                    .foregroundStyle(.white)
+                Text(player.preparationPhase)
+                    .font(.subheadline)
+                    .foregroundStyle(.white.opacity(0.85))
+                    .multilineTextAlignment(.center)
+                if player.preparationPhase == "Applying MGQ EQ" {
+                    ProgressView()
+                        .tint(.white)
+                    Text("Processing audio…")
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.75))
+                } else {
+                    ProgressView(value: player.preparationProgress)
+                        .tint(.white)
+                    Text("\(Int((player.preparationProgress * 100).rounded()))%")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.white)
+                }
+            }
+            .padding(24)
+            .frame(maxWidth: 340)
+            .background(.black.opacity(0.86), in: RoundedRectangle(cornerRadius: 18))
+            .shadow(radius: 16)
+            .accessibilityAddTraits(.isModal)
         }
     }
 
@@ -106,13 +157,8 @@ struct ContentView: View {
                     PlaybackProgressBar()
                 }
                 Spacer()
-                VStack(alignment: .trailing, spacing: 4) {
-                    Button { player.requestMusicLibrary(); showingLibrary = true } label: {
-                        Label("Authorize & Refresh", systemImage: "music.note.badge.plus")
-                    }
-                    Button { showingLibrary = true } label: {
-                        Label("Show Music Library", systemImage: "music.note.list")
-                    }
+                Button { player.requestMusicLibrary(); showingLibrary = true } label: {
+                    Label("Music Library", systemImage: "music.note.list")
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
@@ -122,25 +168,31 @@ struct ContentView: View {
             HStack(spacing: 18) {
                 CompactCheckbox("Link L/R", isOn: $player.tandem)
                 CompactCheckbox("Bypass EQ", isOn: Binding(get: { player.bypassed }, set: { player.bypassed = $0; player.refreshEQ() }))
-                Text("±12 dB · ½ dB steps").foregroundStyle(.secondary)
-                Button("Flat") { player.reset() }.buttonStyle(.bordered)
-            }
-            HStack(spacing: 12) {
+                Button("Reset") { player.reset() }.buttonStyle(.bordered)
                 Button { showingSavePreset = true } label: { Label("Save EQ Preset", systemImage: "square.and.arrow.down") }
                     .buttonStyle(.bordered)
                 Button { showingLoadPreset = true } label: { Label("Load EQ Preset", systemImage: "folder") }
                     .buttonStyle(.bordered)
+                Spacer(minLength: 0)
+            }
+            HStack {
                 Text(player.libraryUsesMGQ ? "Spectrum analyzer enabled for this Music library track" : player.usingMusicLibrary ? "Spectrum analyzer unavailable for protected Apple Music playback" : "Spectrum analyzer enabled for imported audio")
                     .font(.caption)
                     .foregroundStyle(player.usingMusicLibrary && !player.libraryUsesMGQ ? Color.orange : Color.green)
             }
-            Text("Imported audio is processed by MGQ. Apple Music/iTunes library tracks can be browsed below, but iPadOS does not permit another app to process their protected playback stream.")
-                .font(.footnote).foregroundStyle(.secondary)
         }
     }
 
     private var transportIsPlaying: Bool {
         player.libraryUsesMGQ ? player.isPlaying : (player.usingMusicLibrary ? player.isLibraryPlaying : player.isPlaying)
+    }
+
+    private var buildStamp: String {
+        guard let url = Bundle.main.url(forResource: "BuildStamp", withExtension: "txt"),
+              let stamp = try? String(contentsOf: url, encoding: .utf8)
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+              !stamp.isEmpty else { return "development" }
+        return stamp
     }
 }
 
@@ -201,28 +253,87 @@ private struct EqualizerChannel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack { Text(title).font(.headline); Spacer(); Text("Spectrum follows MGQ-processed audio").font(.caption).foregroundStyle(.secondary) }
+            Text(title).font(.headline)
             GeometryReader { geometry in
-                let bandWidth = max(20, (geometry.size.width - 8) / CGFloat(bands.count))
+                let scaleWidth: CGFloat = 46
+                let gridWidth = geometry.size.width - scaleWidth
+                let bandWidth = max(20, gridWidth / CGFloat(bands.count))
                 HStack(alignment: .bottom, spacing: 0) {
-                    ForEach(bands) { band in
-                        VStack(spacing: 4) {
-                            SpectrumMeter(level: player.spectrum[band.id]).frame(width: max(10, bandWidth - 8), height: 92)
-                            VerticalSlider(
-                                value: Binding(get: { bands[band.id].gain }, set: { player.setGain(channel: channel, id: band.id, gain: $0) }),
-                                onEditingEnded: { player.commitEQChange() }
-                            )
-                                .frame(width: bandWidth, height: 170)
-                            Text(band.label).font(.system(size: bandWidth < 24 ? 6 : 8, design: .monospaced)).lineLimit(1).minimumScaleFactor(0.5).frame(width: bandWidth)
+                    HStack(alignment: .bottom, spacing: 0) {
+                        ForEach(bands) { band in
+                            VStack(spacing: 4) {
+                                SpectrumMeter(level: player.spectrum[band.id]).frame(width: max(10, bandWidth - 8), height: 92)
+                                VerticalSlider(
+                                    value: Binding(get: { bands[band.id].gain }, set: { player.setGain(channel: channel, id: band.id, gain: $0) }),
+                                    onEditingEnded: { player.commitEQChange() }
+                                )
+                                    .frame(width: bandWidth, height: 170)
+                                Text(band.label).font(.system(size: bandWidth < 24 ? 6 : 8, design: .monospaced)).lineLimit(1).minimumScaleFactor(0.5).frame(width: bandWidth)
+                            }
+                            .frame(width: bandWidth)
                         }
-                        .frame(width: bandWidth)
                     }
+                    .frame(width: gridWidth, alignment: .leading)
+                    VStack(spacing: 4) {
+                        SpectrumScaleLabels()
+                            .frame(height: 92)
+                        EQScaleLabels()
+                            .frame(height: 170)
+                        Color.clear.frame(height: 10)
+                    }
+                    .frame(width: scaleWidth)
                 }
                 .frame(width: geometry.size.width, alignment: .leading)
             }
             .frame(height: 292)
             .padding(.horizontal, 4)
+            .padding(.top, 5)
             .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
+        }
+    }
+}
+
+private struct SpectrumScaleLabels: View {
+    private let values = [12, 0, -12, -24, -36, -48]
+
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack {
+                ForEach(values, id: \.self) { value in
+                    let y = (CGFloat(12 - value) / 72) * geometry.size.height
+                    Text(label(for: value))
+                        .foregroundStyle(color(for: value))
+                        .position(x: geometry.size.width / 2, y: y)
+                }
+            }
+            .font(.system(size: 8, design: .monospaced).weight(.semibold))
+        }
+    }
+
+    private func label(for value: Int) -> String {
+        value > 0 ? "+\(value) dB" : "\(value) dB"
+    }
+
+    private func color(for value: Int) -> Color {
+        if value >= 0 { return .red }
+        return .green
+    }
+}
+
+private struct EQScaleLabels: View {
+    private let values = [12, 9, 6, 3, 0, -3, -6, -9, -12]
+
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack {
+                ForEach(values, id: \.self) { value in
+                    let y = min(max(6, (CGFloat(12 - value) / 24) * geometry.size.height), geometry.size.height - 6)
+                    Text(value == 0 ? "0 dB" : "\(value > 0 ? "+" : "−")\(abs(value)) dB")
+                        .position(x: geometry.size.width / 2, y: y)
+                }
+            }
+            .font(.system(size: 8, design: .monospaced))
+            .foregroundStyle(.blue)
         }
     }
 }
@@ -268,7 +379,7 @@ private struct SpectrumMeter: View {
             let height = max(0, min(1, CGFloat((level + 60) / 72))) * geometry.size.height
             ZStack(alignment: .bottom) {
                 Capsule().fill(.black.opacity(0.12))
-                Capsule().fill(level > 0 ? .red : level > -12 ? .yellow : .green).frame(height: height)
+                Capsule().fill(level >= 0 ? .red : .green).frame(height: height)
                 ForEach(Array(stride(from: -60, through: 12, by: 3)), id: \.self) { db in
                     Rectangle()
                         .fill(db == 0 ? Color.primary.opacity(0.5) : Color.secondary.opacity(0.34))
@@ -303,6 +414,11 @@ private struct CompactCheckbox: View {
     }
 }
 
+private enum MusicLibraryRoute: Hashable {
+    case artist(String)
+    case album(artist: String, title: String)
+}
+
 private struct MusicLibraryView: View {
     @EnvironmentObject private var player: PlayerViewModel
     var body: some View {
@@ -310,7 +426,7 @@ private struct MusicLibraryView: View {
             HStack(spacing: 0) {
                 List(player.artists, id: \.self) { artist in
                     HStack {
-                        NavigationLink { ArtistAlbumsView(artist: artist) } label: {
+                        NavigationLink(value: MusicLibraryRoute.artist(artist)) {
                             Label(artist, systemImage: "person.crop.circle")
                         }
                         Spacer()
@@ -385,7 +501,7 @@ private struct ArtistAlbumsView: View {
             Section("Albums") {
                 ForEach(player.albums(for: artist)) { album in
                     HStack {
-                        NavigationLink { AlbumTracksView(album: album) } label: {
+                        NavigationLink(value: MusicLibraryRoute.album(artist: artist, title: album.title)) {
                             VStack(alignment: .leading) {
                                 Text(album.title)
                                 Text("\(album.songs.count) songs").font(.caption).foregroundStyle(.secondary)
