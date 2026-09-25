@@ -1,0 +1,237 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A100001 /* MGQiPadApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200001 /* MGQiPadApp.swift */; };
+		A100002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200002 /* ContentView.swift */; };
+		A100003 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200003 /* Models.swift */; };
+		A100004 /* PlayerViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200004 /* PlayerViewModel.swift */; };
+		A100005 /* StereoEQRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200005 /* StereoEQRenderer.swift */; };
+		A100006 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A200007 /* Assets.xcassets */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		A200000 /* MGQPlayer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MGQPlayer.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A200001 /* MGQiPadApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MGQiPadApp.swift; sourceTree = "<group>"; };
+		A200002 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		A200003 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		A200004 /* PlayerViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerViewModel.swift; sourceTree = "<group>"; };
+		A200005 /* StereoEQRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StereoEQRenderer.swift; sourceTree = "<group>"; };
+		A200006 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
+		A200007 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A300001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A400001 = {
+			isa = PBXGroup;
+			children = (
+				A400002 /* MGQiPad */,
+				A200006 /* README.md */,
+				A400003 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A400002 /* MGQiPad */ = {
+			isa = PBXGroup;
+			children = (
+				A200001 /* MGQiPadApp.swift */,
+				A200002 /* ContentView.swift */,
+				A200003 /* Models.swift */,
+				A200004 /* PlayerViewModel.swift */,
+				A200005 /* StereoEQRenderer.swift */,
+				A200007 /* Assets.xcassets */,
+			);
+			path = MGQiPad;
+			sourceTree = "<group>";
+		};
+		A400003 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A200000 /* MGQPlayer.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A500001 /* MGQiPad */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A600002 /* Build configuration list for PBXNativeTarget "MGQiPad" */;
+			buildPhases = (
+				A700001 /* Sources */,
+				A300001 /* Frameworks */,
+				A700002 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = MGQiPad;
+			productName = MGQiPad;
+			productReference = A200000 /* MGQPlayer.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A800001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				LastUpgradeCheck = 1620;
+				TargetAttributes = {
+					A500001 = {
+						CreatedOnToolsVersion = 16.2;
+					};
+				};
+			};
+			buildConfigurationList = A600001 /* Build configuration list for PBXProject "MGQiPad" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = A400001;
+			productRefGroup = A400003 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				A500001 /* MGQiPad */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A700002 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A100006 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A700001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A100001 /* MGQiPadApp.swift in Sources */,
+				A100002 /* ContentView.swift in Sources */,
+				A100003 /* Models.swift in Sources */,
+				A100004 /* PlayerViewModel.swift in Sources */,
+				A100005 /* StereoEQRenderer.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		A900001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_STYLE = Automatic;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		A900002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_STYLE = Automatic;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+			};
+			name = Release;
+		};
+		A900003 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = T8TS5PQXN8;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSAppleMusicUsageDescription = "MGQ Player uses your Music library to list and play tracks you select.";
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.gadzikowski.mgqipad;
+				PRODUCT_NAME = MGQPlayer;
+				SDKROOT = iphoneos;
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 2;
+			};
+			name = Debug;
+		};
+		A900004 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = T8TS5PQXN8;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSAppleMusicUsageDescription = "MGQ Player uses your Music library to list and play tracks you select.";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.gadzikowski.mgqipad;
+				PRODUCT_NAME = MGQPlayer;
+				SDKROOT = iphoneos;
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 2;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A600001 /* Build configuration list for PBXProject "MGQiPad" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A900001 /* Debug */,
+				A900002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A600002 /* Build configuration list for PBXNativeTarget "MGQiPad" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A900003 /* Debug */,
+				A900004 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = A800001 /* Project object */;
+}
