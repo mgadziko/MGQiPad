@@ -13,18 +13,26 @@ final class StereoEQRenderer {
         if let rightSetup { vDSP_biquad_DestroySetup(rightSetup) }
     }
 
-    func render(_ input: AVAudioPCMBuffer, left: [Float], right: [Float], frequencies: [Double]) -> AVAudioPCMBuffer? {
+    func render(
+        _ input: AVAudioPCMBuffer,
+        startingAt startFrame: AVAudioFramePosition = 0,
+        left: [Float],
+        right: [Float],
+        frequencies: [Double]
+    ) -> AVAudioPCMBuffer? {
+        let start = max(0, min(Int(startFrame), Int(input.frameLength) - 1))
+        let availableFrames = AVAudioFrameCount(Int(input.frameLength) - start)
         guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: input.format.sampleRate, channels: 2, interleaved: false),
-              let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: input.frameLength),
+              let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: availableFrames),
               let source = input.floatChannelData,
               let destination = output.floatChannelData else { return nil }
 
         configure(sampleRate: format.sampleRate, left: left, right: right, frequencies: frequencies)
-        output.frameLength = input.frameLength
-        let frames = vDSP_Length(input.frameLength)
+        output.frameLength = availableFrames
+        let frames = vDSP_Length(availableFrames)
         guard let leftSetup, let rightSetup else { return nil }
-        vDSP_biquad(leftSetup, &leftDelay, source[0], 1, destination[0], 1, frames)
-        let sourceRight = input.format.channelCount > 1 ? source[1] : source[0]
+        vDSP_biquad(leftSetup, &leftDelay, source[0].advanced(by: start), 1, destination[0], 1, frames)
+        let sourceRight = (input.format.channelCount > 1 ? source[1] : source[0]).advanced(by: start)
         vDSP_biquad(rightSetup, &rightDelay, sourceRight, 1, destination[1], 1, frames)
         return output
     }

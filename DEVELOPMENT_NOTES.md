@@ -6,6 +6,7 @@
 - MGQ playback is used only when every selected item is non-protected, has an asset URL and a duration, and decodes to a non-empty PCM buffer.
 - When MGQ cannot decode or start a library item, playback falls back to Apple's Music player. In that route, neither custom EQ nor the spectrum analyzer can receive the audio stream.
 - Before MGQ playback, the app activates an `AVAudioSession` using the playback category. This is required for AVAudioEngine output to reach the iPad speakers.
+- MGQ currently renders selected audio offline before playback. Changing a slider rebuilds playback, so a future live-EQ implementation must be introduced only with a device-tested real-time audio graph.
 - Replaced audio buffers are guarded by a playback generation ID. Never allow an old buffer-completion callback to advance the queue.
 
 ## Persistent state
@@ -19,3 +20,4 @@
 
 - Build command: `xcodebuild -project MGQiPad.xcodeproj -scheme MGQiPad -configuration Debug -sdk iphoneos -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO build`
 - Test library and audio behavior on a physical iPad. The Simulator does not provide a meaningful device Music-library test environment.
+- Keep the generated iPad launch screen enabled and use a lazy EQ control stack so the first render does not present as a blank black screen.

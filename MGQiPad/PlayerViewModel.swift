@@ -11,6 +11,8 @@ final class PlayerViewModel: ObservableObject {
     @Published var bypassed = false { didSet { persistCurrentEQ() } }
     @Published var isPlaying = false
     @Published var title = "Import a song to begin"
+    @Published var albumTitle = ""
+    @Published var artistName = ""
     @Published var status = "Ready"
     @Published var spectrum = Array(repeating: Float(-72), count: 31)
     @Published var librarySongs: [MPMediaItem] = []
@@ -19,6 +21,8 @@ final class PlayerViewModel: ObservableObject {
     @Published var usingMusicLibrary = false
     @Published var libraryUsesMGQ = false
     @Published var pendingLibrarySelection: LibraryPlaybackSelection?
+    @Published var playbackElapsed: TimeInterval = 0
+    @Published var playbackDuration: TimeInterval = 0
 
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
@@ -30,7 +34,10 @@ final class PlayerViewModel: ObservableObject {
     private var sourceBuffer: AVAudioPCMBuffer?
     private var preparedBuffer: AVAudioPCMBuffer?
     private var savedLibraryQueue: PersistedLibraryQueue?
+    private var restoredMGQPlaybackPending = false
     private var nowPlayingObserver: NSObjectProtocol?
+    private var scheduledSourceFrame: AVAudioFramePosition = 0
+    private var progressTimer: Timer?
     /// Increments whenever scheduled MGQ playback is replaced or stopped.
     /// A completion from an old buffer must never advance the library queue.
     private var scheduledPlaybackID = 0
@@ -45,18 +52,16 @@ final class PlayerViewModel: ObservableObject {
         loadPresets()
         restoreCurrentEQ()
         savedLibraryQueue = loadPersistedLibraryQueue()
-        musicPlayer.beginGeneratingPlaybackNotifications()
-        nowPlayingObserver = NotificationCenter.default.addObserver(forName: .MPMusicPlayerControllerNowPlayingItemDidChange, object: musicPlayer, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.syncApplePlayerQueuePosition() }
+        progressTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.refreshPlaybackProgress() }
         }
-        if MPMediaLibrary.authorizationStatus() == .authorized {
-            requestMusicLibrary()
-        }
+        if let progressTimer { RunLoop.main.add(progressTimer, forMode: .common) }
     }
 
     deinit {
+        progressTimer?.invalidate()
         if let nowPlayingObserver { NotificationCenter.default.removeObserver(nowPlayingObserver) }
-        musicPlayer.endGeneratingPlaybackNotifications()
+        if nowPlayingObserver != nil { musicPlayer.endGeneratingPlaybackNotifications() }
     }
 
     func importFile(_ url: URL) {
@@ -64,20 +69,28 @@ final class PlayerViewModel: ObservableObject {
         defer { if access { url.stopAccessingSecurityScopedResource() } }
         usingMusicLibrary = false
         libraryUsesMGQ = false
-        _ = loadAudioFile(url, title: url.deletingPathExtension().lastPathComponent, autoplay: false)
+        restoredMGQPlaybackPending = false
+        _ = loadAudioFile(url, title: url.deletingPathExtension().lastPathComponent, album: nil, artist: nil, autoplay: false)
     }
 
-    func togglePlayback() { isPlaying ? player.pause() : playPrepared() }
+    func togglePlayback() {
+        if isPlaying { refreshPlaybackProgress(); player.pause(); isPlaying = false }
+        else { playPrepared() }
+    }
 
     func toggleTransport() {
         if usingMusicLibrary {
             if libraryUsesMGQ {
-                if isPlaying { player.pause(); isPlaying = false; status = "MGQ library playback paused" }
+                if isPlaying { refreshPlaybackProgress(); player.pause(); isPlaying = false; status = "MGQ library playback paused" }
                 else { playPrepared() }
-            } else if isLibraryPlaying { musicPlayer.pause(); isLibraryPlaying = false; status = "Music library paused" }
+            } else if restoredMGQPlaybackPending {
+                restoredMGQPlaybackPending = false
+                libraryUsesMGQ = true
+                loadCurrentMGQLibraryTrack()
+            } else if isLibraryPlaying { refreshPlaybackProgress(); musicPlayer.pause(); isLibraryPlaying = false; status = "Music library paused" }
             else { musicPlayer.play(); isLibraryPlaying = true; status = "Playing through Apple’s player — MGQ EQ and Spectrum Analyzer are unavailable for this track." }
         } else {
-            if isPlaying { player.pause(); isPlaying = false; status = "Paused" } else { playPrepared() }
+            if isPlaying { refreshPlaybackProgress(); player.pause(); isPlaying = false; status = "Paused" } else { playPrepared() }
         }
     }
 
@@ -99,17 +112,39 @@ final class PlayerViewModel: ObservableObject {
         else { musicPlayer.skipToNextItem(); status = "Next track" }
     }
 
-    func update(channel: EQChannel, id: Int, gain: Float) {
+    func setGain(channel: EQChannel, id: Int, gain: Float) {
         let value = min(12, max(-12, (gain * 2).rounded() / 2))
         if channel == .left { leftBands[id].gain = value } else { rightBands[id].gain = value }
         if tandem { if channel == .left { rightBands[id].gain = value } else { leftBands[id].gain = value } }
-        persistCurrentEQ()
-        rebuildPlayback(autoplay: isPlaying)
     }
 
-    func reset() { leftBands.indices.forEach { leftBands[$0].gain = 0; rightBands[$0].gain = 0 }; persistCurrentEQ(); rebuildPlayback(autoplay: isPlaying) }
+    /// Apply the latest slider values while retaining the current song position.
+    func commitEQChange() {
+        persistCurrentEQ()
+        rebuildKeepingPlayhead()
+    }
 
-    func refreshEQ() { rebuildPlayback(autoplay: isPlaying) }
+    func update(channel: EQChannel, id: Int, gain: Float) {
+        setGain(channel: channel, id: id, gain: gain)
+        commitEQChange()
+    }
+
+    func reset() { leftBands.indices.forEach { leftBands[$0].gain = 0; rightBands[$0].gain = 0 }; commitEQChange() }
+
+    func refreshEQ() { rebuildKeepingPlayhead() }
+
+    func seek(to time: TimeInterval) {
+        let destination = min(max(0, time), playbackDuration)
+        if libraryUsesMGQ || !usingMusicLibrary {
+            guard let sourceBuffer else { return }
+            let frame = AVAudioFramePosition(destination * sourceBuffer.format.sampleRate)
+            let shouldResume = isPlaying
+            rebuildPlayback(autoplay: shouldResume, startingAt: frame)
+        } else {
+            musicPlayer.currentPlaybackTime = destination
+        }
+        playbackElapsed = destination
+    }
 
     func savePreset(named name: String) {
         presets.append(EQPreset(name: name, left: leftBands.map(\.gain), right: rightBands.map(\.gain)))
@@ -118,11 +153,11 @@ final class PlayerViewModel: ObservableObject {
 
     func apply(_ preset: EQPreset) {
         for index in leftBands.indices { leftBands[index].gain = preset.left.indices.contains(index) ? preset.left[index] : 0; rightBands[index].gain = preset.right.indices.contains(index) ? preset.right[index] : 0 }
-        persistCurrentEQ()
-        rebuildPlayback(autoplay: isPlaying)
+        commitEQChange()
     }
 
     func requestMusicLibrary() {
+        beginMusicPlayerNotificationsIfNeeded()
         MPMediaLibrary.requestAuthorization { [weak self] status in
             guard status == .authorized else { Task { @MainActor in self?.status = "Music Library permission was not granted." }; return }
             let songs = MPMediaQuery.songs().items ?? []
@@ -133,6 +168,14 @@ final class PlayerViewModel: ObservableObject {
                     self.status = "Found \(songs.count) Music library items. MGQ will process local, non-protected tracks."
                 }
             }
+        }
+    }
+
+    private func beginMusicPlayerNotificationsIfNeeded() {
+        guard nowPlayingObserver == nil else { return }
+        musicPlayer.beginGeneratingPlaybackNotifications()
+        nowPlayingObserver = NotificationCenter.default.addObserver(forName: .MPMusicPlayerControllerNowPlayingItemDidChange, object: musicPlayer, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.syncApplePlayerQueuePosition() }
         }
     }
 
@@ -192,6 +235,7 @@ final class PlayerViewModel: ObservableObject {
     }
 
     private func startLibraryPlayback(_ selection: LibraryPlaybackSelection, autoplay: Bool = true, restoringQueue: Bool = false) {
+        restoredMGQPlaybackPending = false
         if !restoringQueue {
             mgqLibraryQueue = selection.tracks
             mgqLibraryQueueIndex = selection.startItem.flatMap { item in selection.tracks.firstIndex(where: { $0.persistentID == item.persistentID }) } ?? 0
@@ -207,13 +251,15 @@ final class PlayerViewModel: ObservableObject {
     private func startAppleMusicPlayback(_ selection: LibraryPlaybackSelection, autoplay: Bool = true) {
         cancelMGQPlayback(); isPlaying = false
         libraryUsesMGQ = false
+        restoredMGQPlaybackPending = false
         let descriptor = MPMusicPlayerMediaItemQueueDescriptor(itemCollection: MPMediaItemCollection(items: selection.tracks))
         descriptor.startItem = selection.startItem
         musicPlayer.setQueue(with: descriptor)
         if autoplay { musicPlayer.play() } else { musicPlayer.pause() }
         usingMusicLibrary = true
         isLibraryPlaying = autoplay
-        title = selection.title
+        updateNowPlayingDetails(selection.startItem ?? selection.tracks.first)
+        playbackElapsed = musicPlayer.currentPlaybackTime
         status = autoplay ? "Playing \(selection.tracks.count) tracks through Apple’s player — MGQ EQ and Spectrum Analyzer are unavailable for these tracks." : "Restored \(selection.tracks.count)-track Music queue — paused."
     }
 
@@ -221,6 +267,7 @@ final class PlayerViewModel: ObservableObject {
         musicPlayer.stop()
         usingMusicLibrary = true
         libraryUsesMGQ = true
+        restoredMGQPlaybackPending = false
         isLibraryPlaying = false
         loadCurrentMGQLibraryTrack(autoplay: autoplay)
     }
@@ -234,13 +281,13 @@ final class PlayerViewModel: ObservableObject {
         let item = mgqLibraryQueue[mgqLibraryQueueIndex]
         guard let url = item.assetURL else { return }
         cancelMGQPlayback()
-        if !loadAudioFile(url, title: item.title ?? "Music library track", autoplay: autoplay) {
+        if !loadAudioFile(url, title: item.title ?? "Music library track", album: item.albumTitle, artist: item.artist, autoplay: autoplay) {
             startAppleMusicPlayback(LibraryPlaybackSelection(title: item.title ?? "Music library track", tracks: mgqLibraryQueue, startItem: item), autoplay: autoplay)
         }
     }
 
     @discardableResult
-    private func loadAudioFile(_ url: URL, title: String, autoplay: Bool) -> Bool {
+    private func loadAudioFile(_ url: URL, title: String, album: String?, artist: String?, autoplay: Bool) -> Bool {
         do {
             let file = try AVAudioFile(forReading: url)
             guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: file.processingFormat.sampleRate, channels: max(1, min(2, file.processingFormat.channelCount)), interleaved: false),
@@ -249,9 +296,13 @@ final class PlayerViewModel: ObservableObject {
             try file.read(into: buffer)
             guard buffer.frameLength > 0 else { throw CocoaError(.fileReadCorruptFile) }
             sourceBuffer = buffer
+            playbackDuration = Double(buffer.frameLength) / buffer.format.sampleRate
+            playbackElapsed = 0
             self.title = title
+            albumTitle = album ?? ""
+            artistName = artist ?? ""
             status = autoplay ? "Processing Music library track through MGQ EQ and spectrum analyzer" : "Loaded — ready to process through MGQ"
-            rebuildPlayback(autoplay: autoplay)
+            rebuildPlayback(autoplay: autoplay, startingAt: 0)
             return true
         } catch {
             status = "Could not open this audio file through MGQ: \(error.localizedDescription)"
@@ -267,29 +318,67 @@ final class PlayerViewModel: ObservableObject {
         }
     }
 
-    private func rebuildPlayback(autoplay: Bool) {
+    private func rebuildKeepingPlayhead() {
+        let shouldResume = isPlaying
+        let frame = shouldResume ? currentPlaybackFrame() : 0
+        rebuildPlayback(autoplay: shouldResume, startingAt: frame)
+    }
+
+    private func currentPlaybackFrame() -> AVAudioFramePosition {
+        guard let sourceBuffer,
+              let nodeTime = player.lastRenderTime,
+              let playerTime = player.playerTime(forNodeTime: nodeTime) else { return scheduledSourceFrame }
+        let renderedFrames = AVAudioFramePosition(
+            Double(playerTime.sampleTime) * sourceBuffer.format.sampleRate / playerTime.sampleRate
+        )
+        let finalFrame = AVAudioFramePosition(sourceBuffer.frameLength) - 1
+        return min(max(0, scheduledSourceFrame + renderedFrames), max(0, finalFrame))
+    }
+
+    private func refreshPlaybackProgress() {
+        if libraryUsesMGQ || (!usingMusicLibrary && sourceBuffer != nil) {
+            guard let sourceBuffer else { return }
+            playbackDuration = Double(sourceBuffer.frameLength) / sourceBuffer.format.sampleRate
+            playbackElapsed = min(playbackDuration, Double(currentPlaybackFrame()) / sourceBuffer.format.sampleRate)
+        } else if usingMusicLibrary, let item = musicPlayer.nowPlayingItem {
+            playbackDuration = item.playbackDuration
+            playbackElapsed = min(playbackDuration, max(0, musicPlayer.currentPlaybackTime))
+        }
+    }
+
+    private func rebuildPlayback(autoplay: Bool, startingAt sourceFrame: AVAudioFramePosition = 0) {
         guard let sourceBuffer else { return }
         cancelMGQPlayback()
         let playbackID = scheduledPlaybackID
+        scheduledSourceFrame = sourceFrame
         let left = leftBands.map(\.gain), right = rightBands.map(\.gain)
-        preparedBuffer = bypassed ? sourceBuffer : renderer.render(sourceBuffer, left: left, right: right, frequencies: EqualizerBand.frequencies)
+        // The player node feeds a stereo mixer.  It must always receive a
+        // stereo buffer, including while EQ is bypassed.  Scheduling a mono
+        // library buffer directly causes AVAudioPlayerNode to abort with a
+        // channel-format mismatch.
+        preparedBuffer = renderer.render(
+            sourceBuffer,
+            startingAt: sourceFrame,
+            left: bypassed ? Array(repeating: 0, count: EqualizerBand.frequencies.count) : left,
+            right: bypassed ? Array(repeating: 0, count: EqualizerBand.frequencies.count) : right,
+            frequencies: EqualizerBand.frequencies
+        )
         if let preparedBuffer {
             updateSpectrum(preparedBuffer)
             player.scheduleBuffer(preparedBuffer, at: nil, options: [], completionCallbackType: .dataPlayedBack) { [weak self] _ in
-                Task { @MainActor in
-                    guard let self else { return }
-                    guard self.scheduledPlaybackID == playbackID, self.isPlaying else { return }
-                    if self.libraryUsesMGQ, self.mgqLibraryQueueIndex + 1 < self.mgqLibraryQueue.count {
-                        self.mgqLibraryQueueIndex += 1
-                        self.persistLibraryQueue()
-                        self.loadCurrentMGQLibraryTrack()
-                    } else if self.queuedAfterImportedAudio.isEmpty {
-                        self.isPlaying = false
-                        self.status = self.libraryUsesMGQ ? "MGQ Music library queue finished" : "Imported audio finished"
-                    } else {
-                        self.startLibraryPlayback(self.queuedAfterImportedAudio.removeFirst())
-                    }
+            Task { @MainActor in
+                guard let self, self.scheduledPlaybackID == playbackID, self.isPlaying else { return }
+                if self.libraryUsesMGQ, self.mgqLibraryQueueIndex + 1 < self.mgqLibraryQueue.count {
+                    self.mgqLibraryQueueIndex += 1
+                    self.persistLibraryQueue()
+                    self.loadCurrentMGQLibraryTrack()
+                } else if self.queuedAfterImportedAudio.isEmpty {
+                    self.isPlaying = false
+                    self.status = self.libraryUsesMGQ ? "MGQ Music library queue finished" : "Imported audio finished"
+                } else {
+                    self.startLibraryPlayback(self.queuedAfterImportedAudio.removeFirst())
                 }
+            }
             }
         }
         if autoplay { playPrepared() }
@@ -385,17 +474,37 @@ final class PlayerViewModel: ObservableObject {
         mgqLibraryQueue = tracks
         mgqLibraryQueueIndex = currentIndex
         persistLibraryQueue()
-        startLibraryPlayback(LibraryPlaybackSelection(title: currentTrack.title ?? "Restored Music queue", tracks: tracks, startItem: currentTrack), autoplay: false, restoringQueue: true)
+        usingMusicLibrary = true
+        isLibraryPlaying = false
+        isPlaying = false
+        libraryUsesMGQ = false
+        restoredMGQPlaybackPending = tracks.allSatisfy { canProcessWithMGQ($0) }
+        updateNowPlayingDetails(currentTrack)
+        if !restoredMGQPlaybackPending {
+            let descriptor = MPMusicPlayerMediaItemQueueDescriptor(itemCollection: MPMediaItemCollection(items: tracks))
+            descriptor.startItem = currentTrack
+            musicPlayer.setQueue(with: descriptor)
+            musicPlayer.pause()
+        }
         status = "Restored \(tracks.count)-track Music queue — paused."
         return true
     }
 
     private func syncApplePlayerQueuePosition() {
         guard usingMusicLibrary, !libraryUsesMGQ,
-              let item = musicPlayer.nowPlayingItem,
-              let index = mgqLibraryQueue.firstIndex(where: { $0.persistentID == item.persistentID }) else { return }
-        mgqLibraryQueueIndex = index
-        persistLibraryQueue()
+              let item = musicPlayer.nowPlayingItem else { return }
+        updateNowPlayingDetails(item)
+        if let index = mgqLibraryQueue.firstIndex(where: { $0.persistentID == item.persistentID }) {
+            mgqLibraryQueueIndex = index
+            persistLibraryQueue()
+        }
+    }
+
+    private func updateNowPlayingDetails(_ item: MPMediaItem?) {
+        guard let item else { return }
+        title = item.title ?? "Music library track"
+        albumTitle = item.albumTitle ?? ""
+        artistName = item.artist ?? ""
     }
 
     private struct CurrentEQSettings: Codable {

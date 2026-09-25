@@ -6,12 +6,45 @@ struct ContentView: View {
     @State private var importing = false
     @State private var presetName = ""
     @State private var showingSavePreset = false
+    @State private var showingLoadPreset = false
     @State private var showingLibrary = false
+    @State private var controlsReady = false
 
     var body: some View {
+        Group {
+            if controlsReady {
+                mainContent
+            } else {
+                VStack(spacing: 16) {
+                    Image(systemName: "waveform.path.ecg")
+                        .font(.system(size: 56))
+                        .foregroundStyle(.tint)
+                    Text("MGQ Player")
+                        .font(.title.bold())
+                    Text("Preparing dual 31-band EQ…")
+                        .foregroundStyle(.secondary)
+                    Text("Build 260925-0811")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                    Text("Contact: mgqipad@quantumpenguin")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    ProgressView()
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .task {
+            guard !controlsReady else { return }
+            try? await Task.sleep(for: .seconds(2))
+            controlsReady = true
+        }
+    }
+
+    private var mainContent: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
+                LazyVStack(alignment: .leading, spacing: 18) {
                     header
                     EqualizerChannel(title: "Left channel", channel: .left)
                     EqualizerChannel(title: "Right channel", channel: .right)
@@ -28,10 +61,7 @@ struct ContentView: View {
                     Button { player.toggleTransport() } label: { Image(systemName: transportIsPlaying ? "pause.fill" : "play.fill") }
                     Button { player.nextTrack() } label: { Label("Next", systemImage: "forward.fill") }
                         .disabled(!player.usingMusicLibrary)
-                    Menu {
-                        Button("Authorize & Refresh Music Library") { player.requestMusicLibrary(); showingLibrary = true }
-                        Button("Show Music Library") { showingLibrary = true }
-                    } label: { Label("Music Library", systemImage: "music.note.list") }
+                    Button { showingLibrary = true } label: { Label("Music Library", systemImage: "music.note.list") }
                 }
             }
         }
@@ -43,6 +73,14 @@ struct ContentView: View {
             Button("Save") { let name = presetName.trimmingCharacters(in: .whitespacesAndNewlines); if !name.isEmpty { player.savePreset(named: name) }; presetName = "" }
             Button("Cancel", role: .cancel) { }
         } message: { Text("Save the left and right 31-band settings together.") }
+        .confirmationDialog("Load EQ Preset", isPresented: $showingLoadPreset, titleVisibility: .visible) {
+            ForEach(player.presets) { preset in
+                Button(preset.name) { player.apply(preset) }
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text(player.presets.isEmpty ? "There are no saved presets yet." : "Choose a preset to apply it immediately.")
+        }
         .sheet(isPresented: $showingLibrary) {
             NavigationStack { MusicLibraryView() }
                 .environmentObject(player)
@@ -58,25 +96,40 @@ struct ContentView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack {
+            HStack(alignment: .top, spacing: 12) {
                 Image(systemName: "waveform.path.ecg").font(.largeTitle).foregroundStyle(.tint)
-                VStack(alignment: .leading) { Text(player.title).font(.title2.weight(.semibold)); Text(player.status).foregroundStyle(.secondary) }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(player.title).font(.title2.weight(.semibold))
+                    if !player.albumTitle.isEmpty { Text(player.albumTitle).font(.subheadline).foregroundStyle(.secondary) }
+                    if !player.artistName.isEmpty { Text(player.artistName).font(.subheadline).foregroundStyle(.secondary) }
+                    Text(player.status).font(.caption).foregroundStyle(.secondary)
+                    PlaybackProgressBar()
+                }
                 Spacer()
-                Button("Flat") { player.reset() }.buttonStyle(.bordered)
+                VStack(alignment: .trailing, spacing: 4) {
+                    Button { player.requestMusicLibrary(); showingLibrary = true } label: {
+                        Label("Authorize & Refresh", systemImage: "music.note.badge.plus")
+                    }
+                    Button { showingLibrary = true } label: {
+                        Label("Show Music Library", systemImage: "music.note.list")
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .tint(Color(white: 0.22))
+                .foregroundStyle(.white)
             }
             HStack(spacing: 18) {
                 CompactCheckbox("Link L/R", isOn: $player.tandem)
                 CompactCheckbox("Bypass EQ", isOn: Binding(get: { player.bypassed }, set: { player.bypassed = $0; player.refreshEQ() }))
                 Text("±12 dB · ½ dB steps").foregroundStyle(.secondary)
+                Button("Flat") { player.reset() }.buttonStyle(.bordered)
             }
             HStack(spacing: 12) {
                 Button { showingSavePreset = true } label: { Label("Save EQ Preset", systemImage: "square.and.arrow.down") }
                     .buttonStyle(.bordered)
-                Menu {
-                    if player.presets.isEmpty { Text("No saved presets") }
-                    ForEach(player.presets) { preset in Button(preset.name) { player.apply(preset) } }
-                } label: { Label("Load EQ Preset", systemImage: "folder") }
-                .buttonStyle(.bordered)
+                Button { showingLoadPreset = true } label: { Label("Load EQ Preset", systemImage: "folder") }
+                    .buttonStyle(.bordered)
                 Text(player.libraryUsesMGQ ? "Spectrum analyzer enabled for this Music library track" : player.usingMusicLibrary ? "Spectrum analyzer unavailable for protected Apple Music playback" : "Spectrum analyzer enabled for imported audio")
                     .font(.caption)
                     .foregroundStyle(player.usingMusicLibrary && !player.libraryUsesMGQ ? Color.orange : Color.green)
@@ -88,6 +141,54 @@ struct ContentView: View {
 
     private var transportIsPlaying: Bool {
         player.libraryUsesMGQ ? player.isPlaying : (player.usingMusicLibrary ? player.isLibraryPlaying : player.isPlaying)
+    }
+}
+
+private struct PlaybackProgressBar: View {
+    @EnvironmentObject private var player: PlayerViewModel
+    @State private var isSeeking = false
+    @State private var proposedTime: TimeInterval = 0
+
+    private var duration: TimeInterval { max(0.01, player.playbackDuration) }
+    private var displayedTime: TimeInterval { isSeeking ? proposedTime : player.playbackElapsed }
+
+    var body: some View {
+        VStack(spacing: 3) {
+            Slider(
+                value: Binding(
+                    get: { min(duration, max(0, displayedTime)) },
+                    set: { proposedTime = $0 }
+                ),
+                in: 0...duration,
+                onEditingChanged: { editing in
+                    if editing {
+                        isSeeking = true
+                        proposedTime = player.playbackElapsed
+                    } else {
+                        isSeeking = false
+                        player.seek(to: proposedTime)
+                    }
+                }
+            )
+            .tint(.white)
+            .disabled(player.playbackDuration <= 0)
+
+            HStack {
+                Text("−\(formatted(max(0, player.playbackDuration - displayedTime)))")
+                Spacer()
+                Text(formatted(player.playbackDuration))
+            }
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(.white)
+        }
+        .padding(.top, 4)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Track progress")
+    }
+
+    private func formatted(_ time: TimeInterval) -> String {
+        let seconds = max(0, Int(time.rounded(.down)))
+        return String(format: "%d:%02d", seconds / 60, seconds % 60)
     }
 }
 
@@ -107,7 +208,10 @@ private struct EqualizerChannel: View {
                     ForEach(bands) { band in
                         VStack(spacing: 4) {
                             SpectrumMeter(level: player.spectrum[band.id]).frame(width: max(10, bandWidth - 8), height: 92)
-                            VerticalSlider(value: Binding(get: { bands[band.id].gain }, set: { player.update(channel: channel, id: band.id, gain: $0) }))
+                            VerticalSlider(
+                                value: Binding(get: { bands[band.id].gain }, set: { player.setGain(channel: channel, id: band.id, gain: $0) }),
+                                onEditingEnded: { player.commitEQChange() }
+                            )
                                 .frame(width: bandWidth, height: 170)
                             Text(band.label).font(.system(size: bandWidth < 24 ? 6 : 8, design: .monospaced)).lineLimit(1).minimumScaleFactor(0.5).frame(width: bandWidth)
                         }
@@ -125,6 +229,7 @@ private struct EqualizerChannel: View {
 
 private struct VerticalSlider: View {
     @Binding var value: Float
+    let onEditingEnded: () -> Void
     @State private var dragStartValue: Float?
     var body: some View {
         GeometryReader { geometry in
@@ -145,7 +250,7 @@ private struct VerticalSlider: View {
                         if dragStartValue == nil { dragStartValue = value }
                         let start = dragStartValue ?? value
                         value = Float((min(12, max(-12, start - Float(gesture.translation.height / geometry.size.height) * 24)) * 2).rounded() / 2)
-                    }.onEnded { _ in dragStartValue = nil })
+                    }.onEnded { _ in dragStartValue = nil; onEditingEnded() })
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
