@@ -176,7 +176,7 @@ struct ContentView: View {
                 Spacer(minLength: 0)
             }
             HStack {
-                Text(player.libraryUsesMGQ ? "Spectrum analyzer enabled for this Music library track" : player.usingMusicLibrary ? "Spectrum analyzer unavailable for protected Apple Music playback" : "Spectrum analyzer enabled for imported audio")
+                Text(player.libraryUsesMGQ ? "Spectrum analyzer enabled for this Music library track" : player.usingMusicLibrary ? "Audio processing unavailable for protected Apple Music playback" : "Spectrum analyzer enabled for imported audio")
                     .font(.caption)
                     .foregroundStyle(player.usingMusicLibrary && !player.libraryUsesMGQ ? Color.orange : Color.green)
             }
@@ -265,7 +265,8 @@ private struct EqualizerChannel: View {
                                 SpectrumMeter(level: player.spectrum[band.id]).frame(width: max(10, bandWidth - 8), height: 92)
                                 VerticalSlider(
                                     value: Binding(get: { bands[band.id].gain }, set: { player.setGain(channel: channel, id: band.id, gain: $0) }),
-                                    onEditingEnded: { player.commitEQChange() }
+                                    onEditingEnded: { player.commitEQChange() },
+                                    isAvailable: player.isEQAvailable
                                 )
                                     .frame(width: bandWidth, height: 170)
                                 Text(band.label).font(.system(size: bandWidth < 24 ? 6 : 8, design: .monospaced)).lineLimit(1).minimumScaleFactor(0.5).frame(width: bandWidth)
@@ -341,10 +342,12 @@ private struct EQScaleLabels: View {
 private struct VerticalSlider: View {
     @Binding var value: Float
     let onEditingEnded: () -> Void
+    let isAvailable: Bool
     @State private var dragStartValue: Float?
     var body: some View {
         GeometryReader { geometry in
             let y = CGFloat((12 - value) / 24) * geometry.size.height
+            let controlColor: Color = isAvailable ? .accentColor : .gray
             ZStack(alignment: .top) {
                 ForEach(Array(stride(from: -12, through: 12, by: 3)), id: \.self) { gain in
                     Rectangle()
@@ -353,22 +356,28 @@ private struct VerticalSlider: View {
                         .position(x: geometry.size.width / 2, y: (CGFloat(12 - gain) / 24) * geometry.size.height)
                 }
                 Capsule().fill(.secondary.opacity(0.25)).frame(width: 3)
-                Capsule().fill(.tint).frame(width: 3, height: max(0, geometry.size.height - y)).offset(y: y)
-                Circle().fill(.primary)
+                Capsule().fill(controlColor).frame(width: 3, height: max(0, geometry.size.height - y)).offset(y: y)
+                Circle().fill(isAvailable ? Color.primary : Color.gray)
                     .frame(width: 18, height: 18)
                     .offset(y: min(max(0, y - 9), geometry.size.height - 18))
                     .gesture(DragGesture(minimumDistance: 0).onChanged { gesture in
                         if dragStartValue == nil { dragStartValue = value }
                         let start = dragStartValue ?? value
-                        value = Float((min(12, max(-12, start - Float(gesture.translation.height / geometry.size.height) * 24)) * 2).rounded() / 2)
+                        let heightFraction = Float(gesture.translation.height / max(geometry.size.height, 1))
+                        let proposedValue = start - heightFraction * 24
+                        let clampedValue = min(Float(12), max(Float(-12), proposedValue))
+                        value = (clampedValue * 2).rounded() / 2
                     }.onEnded { _ in dragStartValue = nil; onEditingEnded() })
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .allowsHitTesting(isAvailable)
         }
         .accessibilityAdjustableAction { direction in
+            guard isAvailable else { return }
             value = min(12, max(-12, value + (direction == .increment ? 0.5 : -0.5)))
         }
         .accessibilityValue("\(value, specifier: "%.1f") decibels")
+        .accessibilityHint(isAvailable ? "Adjust EQ gain" : "EQ is unavailable for this track")
     }
 }
 

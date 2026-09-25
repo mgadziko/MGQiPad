@@ -32,6 +32,10 @@ final class PlayerViewModel: ObservableObject {
     @Published var preparationProgress = 0.0
     @Published var preparationPhase = "Loading track"
 
+    /// Apple-managed playback does not expose audio frames to this app, so its
+    /// EQ faders must not imply that they can change the sound.
+    var isEQAvailable: Bool { !usingMusicLibrary || libraryUsesMGQ }
+
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
     private let renderer = StereoEQRenderer()
@@ -60,6 +64,7 @@ final class PlayerViewModel: ObservableObject {
         }
         loadPresets()
         restoreCurrentEQ()
+        configureLockScreenControls()
         savedLibraryQueue = loadPersistedLibraryQueue()
         progressTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refreshPlaybackProgress() }
@@ -81,14 +86,14 @@ final class PlayerViewModel: ObservableObject {
     }
 
     func togglePlayback() {
-        if isPlaying { refreshPlaybackProgress(); player.pause(); isPlaying = false }
+        if isPlaying { pauseMGQPlayback() }
         else { playPrepared() }
     }
 
     func toggleTransport() {
         if usingMusicLibrary {
             if libraryUsesMGQ {
-                if isPlaying { refreshPlaybackProgress(); player.pause(); isPlaying = false; status = "MGQ library playback paused" }
+                if isPlaying { pauseMGQPlayback(status: "MGQ library playback paused") }
                 else { playPrepared() }
             } else if restoredMGQPlaybackPending {
                 restoredMGQPlaybackPending = false
@@ -97,7 +102,7 @@ final class PlayerViewModel: ObservableObject {
             } else if isLibraryPlaying { refreshPlaybackProgress(); musicPlayer.pause(); isLibraryPlaying = false; status = "Music library paused" }
             else { musicPlayer.play(); isLibraryPlaying = true; status = "Playing through Apple’s player — MGQ EQ and Spectrum Analyzer are unavailable for this track." }
         } else {
-            if isPlaying { refreshPlaybackProgress(); player.pause(); isPlaying = false; status = "Paused" } else { playPrepared() }
+            if isPlaying { pauseMGQPlayback(status: "Paused") } else { playPrepared() }
         }
     }
 
@@ -257,6 +262,7 @@ final class PlayerViewModel: ObservableObject {
 
     private func startAppleMusicPlayback(_ selection: LibraryPlaybackSelection, autoplay: Bool = true) {
         cancelMGQPlayback(); isPlaying = false
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
         libraryUsesMGQ = false
         restoredMGQPlaybackPending = false
         let descriptor = MPMusicPlayerMediaItemQueueDescriptor(itemCollection: MPMediaItemCollection(items: selection.tracks))
@@ -303,6 +309,7 @@ final class PlayerViewModel: ObservableObject {
         preparationPhase = "Loading \(title)"
         let left = bypassed ? Array(repeating: Float.zero, count: EqualizerBand.frequencies.count) : leftBands.map(\.gain)
         let right = bypassed ? Array(repeating: Float.zero, count: EqualizerBand.frequencies.count) : rightBands.map(\.gain)
+        let maximumOfflineRenderBytes = Self.maximumOfflineRenderBytes
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(3))
             guard let self, self.preparationID == loadID, self.isPreparingTrack else { return }
@@ -319,7 +326,7 @@ final class PlayerViewModel: ObservableObject {
             // small working allowance.  A 112-minute stereo track exceeds this
             // by several gigabytes and can otherwise be terminated by iPadOS.
             let estimatedPeakBytes = Double(file.length) * Double(Int(format.channelCount) + 2) * Double(MemoryLayout<Float>.size) * 1.25
-            guard estimatedPeakBytes <= Self.maximumOfflineRenderBytes,
+            guard estimatedPeakBytes <= maximumOfflineRenderBytes,
                   let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(file.length)) else { throw OfflineRenderError.trackTooLarge }
             buffer.frameLength = AVAudioFrameCount(file.length)
             var framesRead = 0
@@ -435,6 +442,7 @@ final class PlayerViewModel: ObservableObject {
                 } else if self.queuedAfterImportedAudio.isEmpty {
                     self.isPlaying = false
                     self.status = self.libraryUsesMGQ ? "MGQ Music library queue finished" : "Imported audio finished"
+                    self.updateLockScreenNowPlaying()
                 } else {
                     self.startLibraryPlayback(self.queuedAfterImportedAudio.removeFirst())
                 }
@@ -442,6 +450,7 @@ final class PlayerViewModel: ObservableObject {
             }
         }
         if autoplay { playPrepared() }
+        else { updateLockScreenNowPlaying() }
     }
 
     private func playPrepared() {
@@ -458,6 +467,7 @@ final class PlayerViewModel: ObservableObject {
                 usingMusicLibrary = false
                 status = bypassed ? "Playing without EQ" : "Playing through dual 31-band MGQ EQ"
             }
+            updateLockScreenNowPlaying()
         } catch {
             if libraryUsesMGQ, mgqLibraryQueue.indices.contains(mgqLibraryQueueIndex) {
                 let item = mgqLibraryQueue[mgqLibraryQueueIndex]
@@ -472,6 +482,62 @@ final class PlayerViewModel: ObservableObject {
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(.playback, mode: .default, options: [])
         try session.setActive(true)
+    }
+
+    private func pauseMGQPlayback(status: String? = nil) {
+        refreshPlaybackProgress()
+        player.pause()
+        isPlaying = false
+        if let status { self.status = status }
+        updateLockScreenNowPlaying()
+    }
+
+    private func configureLockScreenControls() {
+        let commands = MPRemoteCommandCenter.shared()
+        commands.playCommand.isEnabled = true
+        commands.pauseCommand.isEnabled = true
+        commands.togglePlayPauseCommand.isEnabled = true
+        commands.previousTrackCommand.isEnabled = true
+        commands.nextTrackCommand.isEnabled = true
+
+        commands.playCommand.addTarget { [weak self] _ in
+            Task { @MainActor in self?.playPrepared() }
+            return .success
+        }
+        commands.pauseCommand.addTarget { [weak self] _ in
+            Task { @MainActor in self?.pauseMGQPlayback() }
+            return .success
+        }
+        commands.togglePlayPauseCommand.addTarget { [weak self] _ in
+            Task { @MainActor in self?.toggleTransport() }
+            return .success
+        }
+        commands.previousTrackCommand.addTarget { [weak self] _ in
+            Task { @MainActor in self?.previousTrack() }
+            return .success
+        }
+        commands.nextTrackCommand.addTarget { [weak self] _ in
+            Task { @MainActor in self?.nextTrack() }
+            return .success
+        }
+    }
+
+    private func updateLockScreenNowPlaying() {
+        let isMGQPlayback = libraryUsesMGQ || (!usingMusicLibrary && preparedBuffer != nil)
+        guard isMGQPlayback, playbackDuration > 0 else {
+            if !usingMusicLibrary { MPNowPlayingInfoCenter.default().nowPlayingInfo = nil }
+            return
+        }
+        var info: [String: Any] = [
+            MPMediaItemPropertyTitle: title,
+            MPMediaItemPropertyPlaybackDuration: playbackDuration,
+            MPNowPlayingInfoPropertyElapsedPlaybackTime: playbackElapsed,
+            MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? 1.0 : 0.0,
+            MPNowPlayingInfoPropertyDefaultPlaybackRate: 1.0,
+        ]
+        if !albumTitle.isEmpty { info[MPMediaItemPropertyAlbumTitle] = albumTitle }
+        if !artistName.isEmpty { info[MPMediaItemPropertyArtist] = artistName }
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }
 
     private func cancelMGQPlayback() {
