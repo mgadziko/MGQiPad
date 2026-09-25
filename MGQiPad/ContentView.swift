@@ -25,7 +25,7 @@ struct ContentView: View {
                     Button { importing = true } label: { Label("Import audio", systemImage: "folder.badge.plus") }
                     Button { player.previousTrack() } label: { Label("Previous", systemImage: "backward.fill") }
                         .disabled(!player.usingMusicLibrary)
-                    Button { player.toggleTransport() } label: { Image(systemName: (player.usingMusicLibrary ? player.isLibraryPlaying : player.isPlaying) ? "pause.fill" : "play.fill") }
+                    Button { player.toggleTransport() } label: { Image(systemName: transportIsPlaying ? "pause.fill" : "play.fill") }
                     Button { player.nextTrack() } label: { Label("Next", systemImage: "forward.fill") }
                         .disabled(!player.usingMusicLibrary)
                     Menu {
@@ -77,13 +77,17 @@ struct ContentView: View {
                     ForEach(player.presets) { preset in Button(preset.name) { player.apply(preset) } }
                 } label: { Label("Load EQ Preset", systemImage: "folder") }
                 .buttonStyle(.bordered)
-                Text(player.usingMusicLibrary ? "Spectrum analyzer unavailable for Apple Music playback" : "Spectrum analyzer enabled for imported audio")
+                Text(player.libraryUsesMGQ ? "Spectrum analyzer enabled for this Music library track" : player.usingMusicLibrary ? "Spectrum analyzer unavailable for protected Apple Music playback" : "Spectrum analyzer enabled for imported audio")
                     .font(.caption)
-                    .foregroundStyle(player.usingMusicLibrary ? Color.orange : Color.green)
+                    .foregroundStyle(player.usingMusicLibrary && !player.libraryUsesMGQ ? Color.orange : Color.green)
             }
             Text("Imported audio is processed by MGQ. Apple Music/iTunes library tracks can be browsed below, but iPadOS does not permit another app to process their protected playback stream.")
                 .font(.footnote).foregroundStyle(.secondary)
         }
+    }
+
+    private var transportIsPlaying: Bool {
+        player.libraryUsesMGQ ? player.isPlaying : (player.usingMusicLibrary ? player.isLibraryPlaying : player.isPlaying)
     }
 }
 
@@ -96,7 +100,7 @@ private struct EqualizerChannel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack { Text(title).font(.headline); Spacer(); Text("Spectrum follows the processed file").font(.caption).foregroundStyle(.secondary) }
+            HStack { Text(title).font(.headline); Spacer(); Text("Spectrum follows MGQ-processed audio").font(.caption).foregroundStyle(.secondary) }
             GeometryReader { geometry in
                 let bandWidth = max(20, (geometry.size.width - 8) / CGFloat(bands.count))
                 HStack(alignment: .bottom, spacing: 0) {
