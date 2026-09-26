@@ -50,8 +50,8 @@ struct ContentView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 18) {
                     header
-                    EqualizerChannel(title: "Left channel", channel: .left)
-                    EqualizerChannel(title: "Right channel", channel: .right)
+                    EqualizerChannel(title: "Left Channel", channel: .left)
+                    EqualizerChannel(title: "Right Channel", channel: .right)
                     Color.clear.frame(height: 80)
                 }
                 .padding()
@@ -77,13 +77,9 @@ struct ContentView: View {
             Button("Save") { let name = presetName.trimmingCharacters(in: .whitespacesAndNewlines); if !name.isEmpty { player.savePreset(named: name) }; presetName = "" }
             Button("Cancel", role: .cancel) { }
         } message: { Text("Save the left and right 31-band settings together.") }
-        .confirmationDialog("Load EQ Preset", isPresented: $showingLoadPreset, titleVisibility: .visible) {
-            ForEach(player.presets) { preset in
-                Button(preset.name) { player.apply(preset) }
-            }
-            Button("Cancel", role: .cancel) { }
-        } message: {
-            Text(player.presets.isEmpty ? "There are no saved presets yet." : "Choose a preset to apply it immediately.")
+        .sheet(isPresented: $showingLoadPreset) {
+            PresetPickerSheet()
+                .environmentObject(player)
         }
         .sheet(isPresented: $showingLibrary) {
             NavigationStack(path: $libraryPath) {
@@ -166,19 +162,19 @@ struct ContentView: View {
                 .foregroundStyle(.white)
             }
             HStack(spacing: 18) {
-                CompactCheckbox("Link L/R", isOn: $player.tandem)
-                CompactCheckbox("Bypass EQ", isOn: Binding(get: { player.bypassed }, set: { player.bypassed = $0; player.refreshEQ() }))
+                CompactCheckbox("Link L/R", isOn: $player.tandem, labelColor: .blue)
+                CompactCheckbox("Bypass EQ", isOn: Binding(get: { player.bypassed }, set: { player.bypassed = $0; player.refreshEQ() }), labelColor: .blue)
                 Button("Reset") { player.reset() }.buttonStyle(.bordered)
                 Button { showingSavePreset = true } label: { Label("Save EQ Preset", systemImage: "square.and.arrow.down") }
                     .buttonStyle(.bordered)
                 Button { showingLoadPreset = true } label: { Label("Load EQ Preset", systemImage: "folder") }
                     .buttonStyle(.bordered)
-                Spacer(minLength: 0)
-            }
-            HStack {
                 Text(player.libraryUsesMGQ ? "Spectrum analyzer enabled for this Music library track" : player.usingMusicLibrary ? "Audio processing unavailable for protected Apple Music playback" : "Spectrum analyzer enabled for imported audio")
                     .font(.caption)
                     .foregroundStyle(player.usingMusicLibrary && !player.libraryUsesMGQ ? Color.orange : Color.green)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+                Spacer(minLength: 0)
             }
         }
     }
@@ -253,10 +249,13 @@ private struct EqualizerChannel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(title).font(.headline)
+            Text(title)
+                .font(.headline)
+                .foregroundStyle(.blue)
             GeometryReader { geometry in
                 let scaleWidth: CGFloat = 46
-                let gridWidth = geometry.size.width - scaleWidth
+                let masterWidth: CGFloat = 42
+                let gridWidth = geometry.size.width - scaleWidth - masterWidth
                 let bandWidth = max(20, gridWidth / CGFloat(bands.count))
                 HStack(alignment: .bottom, spacing: 0) {
                     HStack(alignment: .bottom, spacing: 0) {
@@ -283,6 +282,23 @@ private struct EqualizerChannel: View {
                         Color.clear.frame(height: 10)
                     }
                     .frame(width: scaleWidth)
+                    VStack(spacing: 4) {
+                        SpectrumMeter(level: channel == .left ? player.leftMasterLevel : player.rightMasterLevel)
+                            .frame(width: max(10, masterWidth - 8), height: 92)
+                        MasterVolumeSlider(
+                            value: Binding(
+                                get: { channel == .left ? player.leftMasterVolume : player.rightMasterVolume },
+                                set: { player.setMasterVolume(channel: channel, volume: $0) }
+                            ),
+                            isAvailable: player.isEQAvailable,
+                            onEditingEnded: { player.commitMasterVolumeChange() }
+                        )
+                        .frame(width: masterWidth, height: 170)
+                        Text("Out")
+                            .font(.system(size: 10, weight: .bold, design: .rounded))
+                            .foregroundStyle(player.isEQAvailable ? Color.accentColor : Color.secondary)
+                    }
+                    .frame(width: masterWidth)
                 }
                 .frame(width: geometry.size.width, alignment: .leading)
             }
@@ -290,6 +306,51 @@ private struct EqualizerChannel: View {
             .padding(.horizontal, 4)
             .padding(.top, 5)
             .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
+        }
+    }
+}
+
+private struct MasterVolumeSlider: View {
+    @Binding var value: Float
+    let isAvailable: Bool
+    let onEditingEnded: () -> Void
+    @State private var dragStartValue: Float?
+
+    var body: some View {
+        GeometryReader { geometry in
+            let y = CGFloat(1 - value) * geometry.size.height
+            let controlColor: Color = isAvailable ? .accentColor : .gray
+            ZStack(alignment: .top) {
+                Capsule()
+                    .fill(.secondary.opacity(0.25))
+                    .frame(width: 6)
+                Capsule()
+                    .fill(controlColor)
+                    .frame(width: 7, height: max(0, geometry.size.height - y))
+                    .offset(y: y)
+                Circle()
+                    .fill(controlColor)
+                    .frame(width: 20, height: 20)
+                    .offset(y: min(max(0, y - 10), geometry.size.height - 20))
+                    .gesture(DragGesture(minimumDistance: 0).onChanged { gesture in
+                        if dragStartValue == nil { dragStartValue = value }
+                        let start = dragStartValue ?? value
+                        let heightFraction = Float(gesture.translation.height / max(geometry.size.height, 1))
+                        value = min(1, max(0, start - heightFraction))
+                    }.onEnded { _ in
+                        dragStartValue = nil
+                        onEditingEnded()
+                    })
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .allowsHitTesting(isAvailable)
+        }
+        .accessibilityLabel("Master volume")
+        .accessibilityValue("\(Int((value * 100).rounded())) percent")
+        .accessibilityHint(isAvailable ? "Adjust master output volume" : "Audio processing is unavailable for this track")
+        .accessibilityAdjustableAction { direction in
+            guard isAvailable else { return }
+            value = min(1, max(0, value + (direction == .increment ? 0.05 : -0.05)))
         }
     }
 }
@@ -400,13 +461,80 @@ private struct SpectrumMeter: View {
     }
 }
 
+private struct PresetPickerSheet: View {
+    @EnvironmentObject private var player: PlayerViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var checkedPresetIDs = Set<UUID>()
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if player.presets.isEmpty {
+                    ContentUnavailableView("No Saved Presets", systemImage: "slider.horizontal.3", description: Text("Save an EQ setting from the main screen, then return here to load it."))
+                } else {
+                    List {
+                        ForEach(player.presets) { preset in
+                            HStack(spacing: 10) {
+                                Button {
+                                    toggle(preset.id)
+                                } label: {
+                                    Image(systemName: checkedPresetIDs.contains(preset.id) ? "checkmark.square.fill" : "square")
+                                        .foregroundStyle(checkedPresetIDs.contains(preset.id) ? Color.blue : Color.secondary)
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("Select \(preset.name)")
+                                .accessibilityValue(checkedPresetIDs.contains(preset.id) ? "Selected" : "Not selected")
+
+                                Button(preset.name) {
+                                    player.apply(preset)
+                                    dismiss()
+                                }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(.primary)
+                                Spacer(minLength: 0)
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Load EQ Preset")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .safeAreaInset(edge: .bottom) {
+                Button("Delete Checked Items", role: .destructive) {
+                    player.deletePresets(ids: checkedPresetIDs)
+                    checkedPresetIDs.removeAll()
+                }
+                .buttonStyle(.bordered)
+                .disabled(checkedPresetIDs.isEmpty)
+                .padding(.vertical, 10)
+                .frame(maxWidth: .infinity)
+                .background(.bar)
+            }
+        }
+    }
+
+    private func toggle(_ id: UUID) {
+        if checkedPresetIDs.contains(id) {
+            checkedPresetIDs.remove(id)
+        } else {
+            checkedPresetIDs.insert(id)
+        }
+    }
+}
+
 private struct CompactCheckbox: View {
     let label: String
     @Binding var isOn: Bool
+    let labelColor: Color
 
-    init(_ label: String, isOn: Binding<Bool>) {
+    init(_ label: String, isOn: Binding<Bool>, labelColor: Color = .primary) {
         self.label = label
         _isOn = isOn
+        self.labelColor = labelColor
     }
 
     var body: some View {
@@ -415,6 +543,7 @@ private struct CompactCheckbox: View {
                 Image(systemName: isOn ? "checkmark.square.fill" : "square")
                     .foregroundStyle(isOn ? Color.accentColor : Color.secondary)
                 Text(label)
+                    .foregroundStyle(labelColor)
             }
         }
         .buttonStyle(.plain)
@@ -432,30 +561,40 @@ private struct MusicLibraryView: View {
     @EnvironmentObject private var player: PlayerViewModel
     var body: some View {
         ScrollViewReader { proxy in
-            HStack(spacing: 0) {
-                List(player.artists, id: \.self) { artist in
-                    HStack {
-                        NavigationLink(value: MusicLibraryRoute.artist(artist)) {
-                            Label(artist, systemImage: "person.crop.circle")
-                        }
-                        Spacer()
-                        Button { player.playAllAlbums(for: artist) } label: {
-                            Image(systemName: "play.circle.fill")
-                                .font(.title3)
-                        }
-                        .buttonStyle(.borderless)
-                        .accessibilityLabel("Play all albums by \(artist)")
-                    }
-                    .id(artist)
+            VStack(spacing: 0) {
+                HStack {
+                    CompactCheckbox("Use Album Artist", isOn: $player.useAlbumArtist)
+                    Spacer()
                 }
-                ArtistAlphabetIndex(artists: player.artists) { letter in
-                    if let artist = player.artists.first(where: { indexLetter(for: $0) == letter }) {
-                        withAnimation { proxy.scrollTo(artist, anchor: .top) }
+                .padding(.horizontal)
+                .padding(.vertical, 8)
+                .background(.thinMaterial)
+
+                HStack(spacing: 0) {
+                    List(player.artists, id: \.self) { artist in
+                        HStack {
+                            NavigationLink(value: MusicLibraryRoute.artist(artist)) {
+                                Label(artist, systemImage: "person.crop.circle")
+                            }
+                            Spacer()
+                            Button { player.playAllAlbums(for: artist) } label: {
+                                Image(systemName: "play.circle.fill")
+                                    .font(.title3)
+                            }
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel("Play all albums by \(artist)")
+                        }
+                        .id(artist)
                     }
+                    ArtistAlphabetIndex(artists: player.artists) { letter in
+                        if let artist = player.artists.first(where: { indexLetter(for: $0) == letter }) {
+                            withAnimation { proxy.scrollTo(artist, anchor: .top) }
+                        }
+                    }
+                    .frame(width: 29)
+                    .padding(.vertical, 6)
+                    .background(.bar)
                 }
-                .frame(width: 29)
-                .padding(.vertical, 6)
-                .background(.bar)
             }
         }
         .overlay { if player.librarySongs.isEmpty { ContentUnavailableView("No library artists", systemImage: "music.note.list", description: Text("Choose Read Music library and allow access.")) } }

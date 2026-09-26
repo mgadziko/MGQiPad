@@ -11,6 +11,10 @@ final class PlayerViewModel: ObservableObject {
     private static let maximumOfflineRenderBytes = 800_000_000.0
     @Published var leftBands = EqualizerBand.frequencies.enumerated().map { EqualizerBand(id: $0.offset, frequency: $0.element, gain: 0) }
     @Published var rightBands = EqualizerBand.frequencies.enumerated().map { EqualizerBand(id: $0.offset, frequency: $0.element, gain: 0) }
+    @Published private(set) var leftMasterVolume: Float = 1
+    @Published private(set) var rightMasterVolume: Float = 1
+    @Published var leftMasterLevel: Float = -72
+    @Published var rightMasterLevel: Float = -72
     @Published var tandem = true { didSet { persistCurrentEQ() } }
     @Published var bypassed = false { didSet { persistCurrentEQ() } }
     @Published var isPlaying = false
@@ -21,6 +25,9 @@ final class PlayerViewModel: ObservableObject {
     @Published var spectrum = Array(repeating: Float(-72), count: 31)
     @Published var librarySongs: [MPMediaItem] = []
     @Published var presets: [EQPreset] = []
+    @Published var useAlbumArtist = UserDefaults.standard.bool(forKey: "mgq-use-album-artist") {
+        didSet { UserDefaults.standard.set(useAlbumArtist, forKey: "mgq-use-album-artist") }
+    }
     @Published var isLibraryPlaying = false
     @Published var usingMusicLibrary = false
     @Published var libraryUsesMGQ = false
@@ -60,7 +67,12 @@ final class PlayerViewModel: ObservableObject {
         engine.connect(player, to: engine.mainMixerNode, format: nil)
         engine.mainMixerNode.installTap(onBus: 0, bufferSize: 2_048, format: nil) { [weak self] buffer, _ in
             let levels = Self.spectrumLevels(for: buffer)
-            DispatchQueue.main.async { self?.spectrum = levels }
+            let masterLevels = Self.masterLevels(for: buffer)
+            DispatchQueue.main.async {
+                self?.spectrum = levels
+                self?.leftMasterLevel = masterLevels.left
+                self?.rightMasterLevel = masterLevels.right
+            }
         }
         loadPresets()
         restoreCurrentEQ()
@@ -130,6 +142,17 @@ final class PlayerViewModel: ObservableObject {
         if tandem { if channel == .left { rightBands[id].gain = value } else { leftBands[id].gain = value } }
     }
 
+    func setMasterVolume(channel: EQChannel, volume: Float) {
+        let clampedVolume = min(1, max(0, volume))
+        if channel == .left { leftMasterVolume = clampedVolume }
+        else { rightMasterVolume = clampedVolume }
+    }
+
+    func commitMasterVolumeChange() {
+        persistCurrentEQ()
+        rebuildKeepingPlayhead()
+    }
+
     /// Apply the latest slider values while retaining the current song position.
     func commitEQChange() {
         persistCurrentEQ()
@@ -163,6 +186,11 @@ final class PlayerViewModel: ObservableObject {
         persistPresets()
     }
 
+    func deletePresets(ids: Set<UUID>) {
+        presets.removeAll { ids.contains($0.id) }
+        persistPresets()
+    }
+
     func apply(_ preset: EQPreset) {
         for index in leftBands.indices { leftBands[index].gain = preset.left.indices.contains(index) ? preset.left[index] : 0; rightBands[index].gain = preset.right.indices.contains(index) ? preset.right[index] : 0 }
         commitEQChange()
@@ -192,13 +220,22 @@ final class PlayerViewModel: ObservableObject {
     }
 
     func albums(for artist: String) -> [LibraryAlbum] {
-        Dictionary(grouping: librarySongs.filter { ($0.artist ?? "Unknown Artist") == artist }, by: { $0.albumTitle ?? "Unknown Album" })
+        Dictionary(grouping: librarySongs.filter { browserArtist(for: $0) == artist }, by: { $0.albumTitle ?? "Unknown Album" })
             .map { LibraryAlbum(artist: artist, title: $0.key, songs: sortedTracks($0.value)) }
             .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
     }
 
     var artists: [String] {
-        Array(Set(librarySongs.map { $0.artist ?? "Unknown Artist" })).sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        Array(Set(librarySongs.map(browserArtist))).sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+
+    private func browserArtist(for item: MPMediaItem) -> String {
+        if useAlbumArtist,
+           let albumArtist = item.albumArtist?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !albumArtist.isEmpty {
+            return albumArtist
+        }
+        return item.artist ?? "Unknown Artist"
     }
 
     func playAlbum(_ album: LibraryAlbum, startingWith song: MPMediaItem? = nil) {
@@ -309,6 +346,8 @@ final class PlayerViewModel: ObservableObject {
         preparationPhase = "Loading \(title)"
         let left = bypassed ? Array(repeating: Float.zero, count: EqualizerBand.frequencies.count) : leftBands.map(\.gain)
         let right = bypassed ? Array(repeating: Float.zero, count: EqualizerBand.frequencies.count) : rightBands.map(\.gain)
+        let leftMaster = leftMasterVolume
+        let rightMaster = rightMasterVolume
         let maximumOfflineRenderBytes = Self.maximumOfflineRenderBytes
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(3))
@@ -344,7 +383,7 @@ final class PlayerViewModel: ObservableObject {
             }
             guard buffer.frameLength > 0 else { throw CocoaError(.fileReadCorruptFile) }
             DispatchQueue.main.async { [weak self] in guard let self, self.preparationID == loadID else { return }; self.preparationPhase = "Applying MGQ EQ"; self.preparationProgress = 0.72 }
-            let rendered = StereoEQRenderer().render(buffer, left: left, right: right, frequencies: EqualizerBand.frequencies)
+            let rendered = StereoEQRenderer().render(buffer, left: left, right: right, leftVolume: leftMaster, rightVolume: rightMaster, frequencies: EqualizerBand.frequencies)
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.preparationID == loadID else { return }
                 self.sourceBuffer = buffer; self.preparedBuffer = rendered
@@ -421,6 +460,8 @@ final class PlayerViewModel: ObservableObject {
             startingAt: sourceFrame,
             left: bypassed ? Array(repeating: 0, count: EqualizerBand.frequencies.count) : left,
             right: bypassed ? Array(repeating: 0, count: EqualizerBand.frequencies.count) : right,
+            leftVolume: leftMasterVolume,
+            rightVolume: rightMasterVolume,
             frequencies: EqualizerBand.frequencies
         )
         schedulePreparedPlayback(autoplay: autoplay, sourceFrame: sourceFrame)
@@ -562,6 +603,26 @@ final class PlayerViewModel: ObservableObject {
         }
     }
 
+    nonisolated private static func masterLevels(for buffer: AVAudioPCMBuffer) -> (left: Float, right: Float) {
+        guard let channels = buffer.floatChannelData else { return (-72, -72) }
+        let frameCount = min(Int(buffer.frameLength), 4_096)
+        guard frameCount > 0 else { return (-72, -72) }
+
+        func level(for channel: Int) -> Float {
+            var sumOfSquares: Float = 0
+            for index in 0..<frameCount {
+                let sample = channels[channel][index]
+                sumOfSquares += sample * sample
+            }
+            let rms = sqrt(sumOfSquares / Float(frameCount))
+            return max(-72, min(12, 20 * log10(max(rms, 0.000_001))))
+        }
+
+        let left = level(for: 0)
+        let right = level(for: min(1, Int(buffer.format.channelCount - 1)))
+        return (left, right)
+    }
+
     private var presetURL: URL { URL.documentsDirectory.appending(path: "mgq-presets.json") }
     private func loadPresets() { presets = (try? JSONDecoder().decode([EQPreset].self, from: Data(contentsOf: presetURL))) ?? [] }
     private func persistPresets() { try? JSONEncoder().encode(presets).write(to: presetURL, options: .atomic) }
@@ -638,12 +699,14 @@ final class PlayerViewModel: ObservableObject {
         var right: [Float]
         var tandem: Bool
         var bypassed: Bool
+        var leftMaster: Float?
+        var rightMaster: Float?
     }
 
     private var currentEQURL: URL { URL.documentsDirectory.appending(path: "mgq-current-eq.json") }
 
     private func persistCurrentEQ() {
-        let settings = CurrentEQSettings(left: leftBands.map(\.gain), right: rightBands.map(\.gain), tandem: tandem, bypassed: bypassed)
+        let settings = CurrentEQSettings(left: leftBands.map(\.gain), right: rightBands.map(\.gain), tandem: tandem, bypassed: bypassed, leftMaster: leftMasterVolume, rightMaster: rightMasterVolume)
         try? JSONEncoder().encode(settings).write(to: currentEQURL, options: .atomic)
     }
 
@@ -655,5 +718,7 @@ final class PlayerViewModel: ObservableObject {
         }
         tandem = settings.tandem
         bypassed = settings.bypassed
+        leftMasterVolume = min(1, max(0, settings.leftMaster ?? 1))
+        rightMasterVolume = min(1, max(0, settings.rightMaster ?? 1))
     }
 }

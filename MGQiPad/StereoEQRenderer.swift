@@ -18,6 +18,8 @@ final class StereoEQRenderer {
         startingAt startFrame: AVAudioFramePosition = 0,
         left: [Float],
         right: [Float],
+        leftVolume: Float = 1,
+        rightVolume: Float = 1,
         frequencies: [Double]
     ) -> AVAudioPCMBuffer? {
         let start = max(0, min(Int(startFrame), Int(input.frameLength) - 1))
@@ -34,6 +36,10 @@ final class StereoEQRenderer {
         vDSP_biquad(leftSetup, &leftDelay, source[0].advanced(by: start), 1, destination[0], 1, frames)
         let sourceRight = (input.format.channelCount > 1 ? source[1] : source[0]).advanced(by: start)
         vDSP_biquad(rightSetup, &rightDelay, sourceRight, 1, destination[1], 1, frames)
+        var leftGain = min(1, max(0, leftVolume))
+        var rightGain = min(1, max(0, rightVolume))
+        vDSP_vsmul(destination[0], 1, &leftGain, destination[0], 1, frames)
+        vDSP_vsmul(destination[1], 1, &rightGain, destination[1], 1, frames)
         return output
     }
 
